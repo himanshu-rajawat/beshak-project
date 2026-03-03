@@ -7,8 +7,7 @@ shape), update here only — providers stay untouched.
 from typing import Any
 
 from app.llm_providers.base import BaseLLMProvider, parse_numbered_contexts
-from app.llm_providers.tool_schemas import CHAT_SYSTEM, ENRICH_SYSTEM, EXTRACTION_SYSTEM
-from app.vector_store import search_chunks
+from app.llm_providers.tool_schemas import ENRICH_SYSTEM, EXTRACTION_SYSTEM
 
 _EXTRACTION_FALLBACK = {
     "proposer": {}, "policy": {}, "insured_members": [], "nominee": {},
@@ -36,20 +35,10 @@ def run_chat(
     user_message: str,
 ) -> tuple[str, str]:
     """
-    Answer a user question with a single RAG-augmented LLM call.
-    Returns (answer, confidence).
+    Answer a user question using the provider's ReAct loop (tool-use if supported,
+    single-shot RAG otherwise). Returns (answer, confidence).
     """
-    chunks = search_chunks(vector_store, user_message, k=4)
-    context = "\n\n---\n\n".join(chunks) if chunks else "No relevant content found."
-    augmented = (
-        f"Document excerpts:\n<context>\n{context}\n</context>\n\n"
-        f"Question: {user_message}"
-    )
-    messages = list(messages_history) + [{"role": "user", "content": augmented}]
-    result = provider.chat_json(messages, system=CHAT_SYSTEM)
-    if result:
-        return result.get("answer", "I could not find an answer."), result.get("confidence", "low")
-    return "I was unable to find a clear answer in the document.", "low"
+    return provider.run_react_loop(vector_store, messages_history, user_message)
 
 
 def enrich_chunk_batch(
