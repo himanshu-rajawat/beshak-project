@@ -1,7 +1,16 @@
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from typing import Any
+
+_logger = logging.getLogger(__name__)
+
+_ACTION_RE = re.compile(
+    r'Action:\s*search_document\s*\(\s*"([^"]+)"(?:\s*,\s*(\d+))?\s*\)',
+    re.IGNORECASE,
+)
+_ANSWER_RE = re.compile(r'Answer:\s*(.+)', re.DOTALL | re.IGNORECASE)
 
 # Registry maps provider name → provider class
 _REGISTRY: dict[str, type["BaseLLMProvider"]] = {}
@@ -114,23 +123,50 @@ class BaseLLMProvider(ABC):
         max_iterations: int = 6,
     ) -> tuple[str, str]:
         """
-        ReAct agent loop using the search_document tool.
+        Text-based ReAct agent loop (Thought → Action → PAUSE → Observation → Answer).
+        Driven by the Python host via regex — works identically for all providers.
         Returns (answer, confidence).
-
-        Default implementation: single-shot RAG (for providers that don't support tool use).
-        Override in providers that support tool-use (e.g. ClaudeProvider).
         """
         from app.vector_store import search_chunks
-        from app.llm_providers.tool_schemas import CHAT_SYSTEM
+        from app.llm_providers.tool_schemas import CHAT_REACT_SYSTEM
 
-        chunks = search_chunks(vector_store, user_message, k=4)
-        context = "\n\n---\n\n".join(chunks) if chunks else "No relevant content found."
-        augmented = (
-            f"Document excerpts:\n<context>\n{context}\n</context>\n\n"
-            f"Question: {user_message}"
-        )
-        messages = list(messages_history) + [{"role": "user", "content": augmented}]
-        result = self.chat_json(messages, system=CHAT_SYSTEM)
-        if result:
-            return result.get("answer", "I could not find an answer."), result.get("confidence", "low")
-        return "I was unable to find a clear answer in the document.", "low"
+        messages = list(messages_history) + [{"role": "user", "content": user_message}]
+
+        for iteration in range(1, max_iterations + 1):
+            _logger.info("[ReAct] Iteration %d", iteration)
+            response_text = self.chat(messages, system=CHAT_REACT_SYSTEM)
+            messages.append({"role": "assistant", "content": response_text})
+            _logger.info("[ReAct] Response: %s", response_text[:200])
+
+            # Check for final Answer
+            answer_match = _ANSWER_RE.search(response_text)
+            if answer_match:
+                raw = answer_match.group(1).strip()
+                result = parse_json_response(raw, fallback={})
+                if isinstance(result, dict) and result:
+                    return result.get("answer", "I could not find an answer."), result.get("confidence", "low")
+                return raw, "low"
+
+            # Check for Action
+            action_match = _ACTION_RE.search(response_text)
+            if action_match:
+                query = action_match.group(1)
+                k = max(1, min(6, int(action_match.group(2) or 3)))
+
+                print(f"\n[ReAct iter={iteration}] Searching: '{query}'  (k={k})", flush=True)
+                _logger.info("[ReAct] Tool call — query=%r k=%d", query, k)
+
+                chunks = search_chunks(vector_store, query, k=k)
+                for i, chunk in enumerate(chunks, 1):
+                    preview = chunk[:200].replace("\n", " ")
+                    print(f"  └─ Chunk {i}: {preview}", flush=True)
+                    _logger.info("[ReAct] Chunk %d: %s", i, preview[:120])
+
+                observation = "\n\n---\n\n".join(chunks) if chunks else "No relevant content found."
+                messages.append({"role": "user", "content": f"Observation: {observation}"})
+            else:
+                _logger.warning("[ReAct] No Action or Answer found — stopping")
+                break
+
+        _logger.warning("[ReAct] Max iterations (%d) reached without final answer", max_iterations)
+        return "I was unable to find a definitive answer after multiple searches.", "low"

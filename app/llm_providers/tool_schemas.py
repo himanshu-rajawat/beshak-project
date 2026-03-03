@@ -45,43 +45,42 @@ CHAT_SYSTEM = (
 # ReAct Chat (tool-use loop)
 # ---------------------------------------------------------------------------
 
-CHAT_REACT_SYSTEM = (
-    "You are a helpful insurance document assistant with access to a document search tool.\n"
-    "To answer the user's question:\n"
-    "  1. Call search_document one or more times with targeted queries to find relevant sections.\n"
-    "  2. Keep searching with different queries until you have sufficient information.\n"
-    "  3. Once you have enough context, give a final answer.\n\n"
-    "Always give a final answer as a single valid JSON object:\n"
-    '{"answer": "<your answer>", "confidence": "<high|medium|low>"}\n'
-    "confidence: 'high' = directly stated, 'medium' = inferred, 'low' = not found.\n"
-    "Raw JSON only — no prose, no markdown fences."
-)
+CHAT_REACT_SYSTEM = """You are a helpful insurance document assistant.
+You run in a loop of Thought, Action, PAUSE, Observation until you have enough information.
+At the end of the loop output an Answer.
 
-SEARCH_DOCUMENT_TOOL = {
-    "name": "search_document",
-    "description": (
-        "Search the insurance document using semantic similarity. "
-        "Returns the most relevant text chunks. "
-        "Call multiple times with different queries to gather comprehensive information."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search query to find relevant document sections",
-            },
-            "k": {
-                "type": "integer",
-                "description": "Number of chunks to retrieve (1–6, default 3)",
-                "default": 3,
-                "minimum": 1,
-                "maximum": 6,
-            },
-        },
-        "required": ["query"],
-    },
-}
+Use Thought to describe your reasoning.
+Use Action to search the document — then write PAUSE and stop.
+Observation will be provided to you with the search result.
+Once you have enough context, output an Answer.
+
+Your available action:
+  search_document("query")      — retrieve the 3 most relevant chunks
+  search_document("query", k)   — retrieve k chunks (1–6)
+
+Output format:
+  Thought: <reasoning>
+  Action: search_document("<query>")
+  PAUSE
+
+After receiving an Observation, either search again or give a final answer:
+  Answer: {"answer": "<answer text>", "confidence": "<high|medium|low>"}
+
+confidence:
+  "high"   — information is directly stated in the document
+  "medium" — answer is inferred from the document
+  "low"    — information was not found
+
+Example:
+  Question: What is the sum insured?
+  Thought: I need to find the sum insured from the policy details.
+  Action: search_document("sum insured coverage amount")
+  PAUSE
+  [Observation provided]
+  Thought: The document shows the sum insured is ₹5,00,000.
+  Answer: {"answer": "The sum insured is ₹5,00,000.", "confidence": "high"}
+
+Raw JSON only in the Answer line — no markdown fences."""
 
 # ---------------------------------------------------------------------------
 # Chunk enrichment
