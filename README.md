@@ -1,47 +1,6 @@
 # BeshakPdfExtractor
 
-A Flask REST API that extracts structured data from insurance policy documents (PDF, DOCX, TXT) using LLM agents + RAG (FAISS).
-
-Supports **Claude (claude-sonnet-4-6)** and **OpenAI GPT-4o** out of the box. The provider is selected per request via a `client` field, making it easy to add new LLMs.
-
----
-
-## Features
-
-- **Smart text extraction** — pdfplumber for digital PDFs, Tesseract OCR fallback for scanned documents
-- **Structured extraction** — agentic loop searches the document and returns a normalized JSON schema (proposer, policy details, insured members, nominee)
-- **Conversational Q&A** — ReAct chatbot agent answers free-form questions with confidence scoring
-- **Multi-turn conversations** — conversation history is preserved across requests via `conv_id`
-- **Pluggable LLM providers** — choose Claude or OpenAI per request; adding a new provider takes ~50 lines
-
----
-
-## Project Structure
-
-```
-BeshakPdfExtractor/
-├── app/
-│   ├── __init__.py                    # Flask app factory
-│   ├── data_store.py                  # In-memory singleton (documents + conversations)
-│   ├── text_extractor.py              # PDF/DOCX/TXT extraction with OCR fallback
-│   ├── chunker.py                     # Text chunking (LangChain RecursiveCharacterTextSplitter)
-│   ├── vector_store.py                # FAISS vector store + HuggingFace embeddings
-│   ├── agents.py                      # Thin delegator → llm_providers
-│   ├── routes.py                      # API endpoints
-│   └── llm_providers/
-│       ├── __init__.py                # Re-exports + triggers provider registration
-│       ├── base.py                    # BaseLLMProvider + @register decorator + factory
-│       ├── claude_provider.py         # Anthropic Claude implementation
-│       └── openai_provider.py         # OpenAI GPT-4o implementation
-├── run.py                             # Entry point
-├── requirements.txt
-├── .env.example
-│
-│   # Original standalone scripts (untouched, not imported by the Flask app)
-├── pdf_loader.py
-├── chunking_strategy.py
-└── extract_json_re.py
-```
+A Flask REST API that extracts structured data from insurance policy documents (PDF) and answers free-form questions about them via RAG + LLM.
 
 ---
 
@@ -49,44 +8,44 @@ BeshakPdfExtractor/
 
 | Dependency | Purpose | Install |
 |------------|---------|---------|
-| **Poppler** | PDF → image conversion (OCR path) | [Windows builds](https://github.com/oschwartz10612/poppler-windows/releases) — download the `Release-*.zip` (not Source code), extract, set `POPPLER_PATH` |
-| **Tesseract** | OCR engine | [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) — run the `.exe` installer, set `TESSERACT_CMD` |
 | **Python 3.11+** | Runtime | [python.org](https://python.org) |
+| **Poppler** | PDF → image conversion (OCR path only) | [Windows builds](https://github.com/oschwartz10612/poppler-windows/releases) — extract zip, set `POPPLER_PATH` |
+| **Tesseract** | OCR engine (scanned PDFs only) | [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) — set `TESSERACT_CMD` |
 
-> Poppler and Tesseract are only needed if your PDFs are scanned images. Digital PDFs (where text is selectable) are handled by pdfplumber without either tool.
+> Poppler and Tesseract are only needed for scanned PDFs. Digital PDFs (selectable text) are handled by pdfplumber without them.
 
 ---
 
 ## Setup
 
-### 1. Install Python dependencies
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-> The HuggingFace embedding model (`all-MiniLM-L6-v2`, ~22 MB) downloads automatically on the first upload request.
+> The HuggingFace embedding model (`all-MiniLM-L6-v2`, ~22 MB) downloads automatically on the first `/index` call.
 
 ### 2. Configure environment
 
 ```bash
-copy .env.example .env   # Windows
-cp .env.example .env     # macOS/Linux
+cp .env.example .env   # macOS/Linux
+copy .env.example .env # Windows
 ```
 
-Edit `.env` — set at least one LLM key:
+Edit `.env`:
 
 ```env
-# Required: set whichever provider(s) you want to use
+# Required for whichever provider(s) you use
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 
-# Windows only — skip if already on system PATH
-POPPLER_PATH=C:\Users\you\Downloads\poppler-windows-25.12.0-0\Library\bin
+# Windows only — skip if already on PATH
+POPPLER_PATH=C:\Users\you\poppler-windows\Library\bin
 TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
 ```
 
-### 3. Run the server
+### 3. Run
 
 ```bash
 python run.py
@@ -96,38 +55,15 @@ Server starts at `http://localhost:5000`.
 
 ---
 
-## LLM Providers
+## Workflow
 
-| `client` value | Model | Key required |
-|----------------|-------|-------------|
-| `claude` (default) | claude-sonnet-4-6 | `ANTHROPIC_API_KEY` |
-| `openai` | gpt-4o | `OPENAI_API_KEY` |
-
-Pass `client` as a form field on upload or a JSON field on chat. Omit it to use Claude.
-
-### Adding a new provider
-
-1. Create `app/llm_providers/<name>_provider.py`
-2. Subclass `BaseLLMProvider` and implement `run_extraction_agent` and `run_chat_agent`
-3. Decorate the class with `@register("<name>")`
-4. Add one import line to `app/llm_providers/__init__.py`
-
-```python
-# app/llm_providers/gemini_provider.py
-from app.llm_providers.base import BaseLLMProvider, register
-
-@register("gemini")
-class GeminiProvider(BaseLLMProvider):
-    def run_extraction_agent(self, vector_store, filename): ...
-    def run_chat_agent(self, vector_store, messages_history, user_message): ...
 ```
+POST /api/upload              → extract text + regex/NLP extraction → returns file_id
+POST /api/files/<id>/index    → chunk + enrich + build FAISS index  → required before chat
+POST /api/chat                → RAG + LLM agent → answer + confidence
 
-```python
-# app/llm_providers/__init__.py  — add one line:
-from app.llm_providers import claude_provider, openai_provider, gemini_provider  # noqa
+POST /api/files/<id>/extract  → (optional) overwrite extracted_data with LLM extraction
 ```
-
-That's it — `client=gemini` will work immediately.
 
 ---
 
@@ -135,7 +71,7 @@ That's it — `client=gemini` will work immediately.
 
 ### `GET /api/providers`
 
-List all registered LLM providers.
+List registered LLM providers.
 
 ```json
 { "providers": ["claude", "openai"] }
@@ -145,56 +81,81 @@ List all registered LLM providers.
 
 ### `POST /api/upload`
 
-Upload an insurance document for extraction.
+Upload a document. Extracts text and runs regex/NLP field extraction. Does **not** build a vector index.
 
 - **Content-Type:** `multipart/form-data`
-- **Fields:**
-  - `file` — `.pdf`, `.txt`, or `.docx`, max 20 MB *(required)*
-  - `client` — `claude` or `openai` *(optional, default: `claude`)*
+- **Fields:** `file` — `.pdf`, `.txt`, or `.docx`, max 20 MB *(required)*
 
-**Response:**
+**Response `201`:**
 ```json
 {
   "file_id": "uuid",
-  "llm_client": "claude",
   "extraction_method": "pdfplumber | ocr | docx | txt",
-  "message": "File uploaded and processed successfully.",
+  "data_extraction_method": "regex_nlp",
+  "indexed": false,
+  "message": "File uploaded and processed successfully. Call POST /api/files/<file_id>/index before chatting.",
   "extracted_data": {
-    "proposer": {
-      "name": "John Doe",
-      "email": "john@example.com",
-      "phone": "9876543210",
-      "address": "123 Main St, Mumbai"
-    },
+    "proposer": { "name": "...", "email": "...", "phone": "...", "address": "..." },
     "policy": {
-      "number": "P/123456/01/2024/001",
-      "type": "Health Insurance",
-      "issue_date": "01/01/2024",
-      "renewal_date": "31/12/2024",
-      "period": "1 year",
-      "premiums": "₹12,000",
-      "sum_insured": "₹5,00,000",
-      "bonus": "N/A",
-      "limit_of_coverage": "N/A",
-      "recharge_benefit": "N/A",
-      "payment_frequency": "Annual"
+      "number": "...", "type": "...", "issue_date": "...", "renewal_date": "...",
+      "period": "...", "premiums": "...", "sum_insured": "...", "bonus": "...",
+      "limit_of_coverage": "...", "recharge_benefit": "...", "payment_frequency": "..."
     },
     "insured_members": [
-      {
-        "name": "John Doe",
-        "gender": "Male",
-        "dob": "01/01/1985",
-        "age": "39",
-        "relationship": "Self",
-        "pre_existing_disease": "None"
-      }
+      { "name": "...", "gender": "...", "dob": "...", "age": "...", "relationship": "...", "pre_existing_disease": "..." }
     ],
-    "nominee": {
-      "name": "Jane Doe",
-      "relationship": "Spouse",
-      "percentage": "100%"
-    }
+    "nominee": { "name": "...", "relationship": "...", "percentage": "..." }
   }
+}
+```
+
+---
+
+### `POST /api/files/<file_id>/index`
+
+Chunk the document, enrich chunks with context (LLM), and build the FAISS vector store. **Required before `/api/chat`.**
+
+- **Content-Type:** `application/json`
+
+**Request:**
+```json
+{ "client": "claude" }
+```
+`client` is optional (default: `claude`).
+
+**Response `200`:**
+```json
+{
+  "file_id": "uuid",
+  "indexed": true,
+  "chunk_count": 42,
+  "message": "Document indexed successfully. You can now chat with it."
+}
+```
+
+Returns `409` if the document is already indexed.
+
+---
+
+### `POST /api/files/<file_id>/extract`
+
+Re-run extraction using an LLM and overwrite `extracted_data`. Optional — use when regex/NLP output is insufficient.
+
+- **Content-Type:** `application/json`
+
+**Request:**
+```json
+{ "client": "openai" }
+```
+`client` is optional (default: `openai`).
+
+**Response `200`:**
+```json
+{
+  "file_id": "uuid",
+  "data_extraction_method": "llm",
+  "llm_client": "openai",
+  "extracted_data": { ... }
 }
 ```
 
@@ -202,7 +163,7 @@ Upload an insurance document for extraction.
 
 ### `POST /api/chat`
 
-Ask a question about an uploaded document.
+Ask a question about an uploaded and indexed document.
 
 - **Content-Type:** `application/json`
 
@@ -211,22 +172,23 @@ Ask a question about an uploaded document.
 {
   "file_id": "uuid",
   "message": "What is the sum insured?",
-  "client": "openai",
+  "client": "claude",
   "conv_id": "uuid (optional — omit to start a new conversation)"
 }
 ```
+`client` is optional (default: `claude`).
 
-**Response:**
+**Response `200`:**
 ```json
 {
   "answer": "The sum insured is ₹5,00,000.",
   "conv_id": "uuid",
   "confidence": "high | medium | low",
-  "llm_client": "openai"
+  "llm_client": "claude"
 }
 ```
 
-Pass the returned `conv_id` in follow-up requests to maintain conversation context. You can switch `client` between turns — the vector store is provider-agnostic.
+Pass the returned `conv_id` in follow-up requests to maintain conversation context. Returns `409` if the document has not been indexed yet.
 
 ---
 
@@ -251,35 +213,34 @@ List all uploaded documents.
 
 ### `GET /api/files/<file_id>`
 
-Get full details for a specific document, including extracted data.
+Get full details for a document.
 
----
-
-## Postman Quick-Start
-
-```
-1. GET  /api/providers
-   → confirm which clients are available
-
-2. POST /api/upload
-   form-data: file=<policy.pdf>, client=claude
-   → copy file_id
-
-3. GET  /api/files/<file_id>
-   → verify extracted data
-
-4. POST /api/chat
-   {"file_id": "...", "message": "What is the policy number?", "client": "claude"}
-   → copy conv_id
-
-5. POST /api/chat  (follow-up, switch to OpenAI)
-   {"file_id": "...", "message": "Who are the insured members?", "conv_id": "...", "client": "openai"}
+```json
+{
+  "file_id": "uuid",
+  "filename": "policy.pdf",
+  "uploaded_at": "2024-01-01T10:00:00+00:00",
+  "extraction_method": "pdfplumber",
+  "chunk_count": 42,
+  "indexed": true,
+  "extracted_data": { ... }
+}
 ```
 
 ---
 
-## Notes
+## Adding a new LLM provider
 
-- **In-memory store** — data is lost on restart. For production with multiple workers, replace `DataStore` with a Redis-backed store.
-- **Single worker** — run with `python run.py`. Do not use multi-process WSGI workers without a shared store.
-- **API costs** — each `/api/upload` triggers multiple LLM calls (the extraction agentic loop). Each `/api/chat` triggers 1–8 calls depending on how many document searches the agent needs.
+1. Create `app/llm_providers/<name>_provider.py`
+2. Subclass `BaseLLMProvider`, apply `@register("<name>")`, implement `chat`, `chat_json`, and `chat_lightweight`
+3. Add one import line to `app/llm_providers/__init__.py`
+
+`client=<name>` will work immediately after that.
+
+---
+
+## Caveats
+
+- **In-memory store** — all data is lost on restart. Replace `DataStore` with a Redis-backed store for production.
+- **Single process** — run with `python run.py`. Multi-process WSGI workers will not share the in-memory store.
+- **API costs** — `/index` makes one LLM call per chunk for context enrichment. `/chat` makes 1–8 LLM calls depending on how many document searches the ReAct agent needs.
