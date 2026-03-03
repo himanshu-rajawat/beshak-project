@@ -1,6 +1,6 @@
 # BeshakPdfExtractor
 
-A Flask REST API that extracts structured data from insurance policy documents (PDF) and answers free-form questions about them via RAG + LLM.
+A Flask REST API that extracts structured data from insurance policy documents (PDF) using regex+spacy/LLM and answers free-form questions about them via RAG + LLM.
 
 ---
 
